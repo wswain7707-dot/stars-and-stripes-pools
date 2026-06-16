@@ -15,6 +15,7 @@ import re
 import time
 import secrets
 import smtplib
+import ssl
 from email.mime.text import MIMEText
 from collections import defaultdict
 from flask import Flask, render_template_string, request, redirect, flash, url_for, session
@@ -200,10 +201,10 @@ def send_notification(name: str, email: str, message: str) -> None:
         msg["To"]       = to
         msg["Reply-To"] = safe_email
 
-        with smtplib.SMTP(host, port) as server:
-            server.login(user, pw)
-            server.sendmail(user, to, msg.as_string())
-
+        with smtplib.SMTP_SSL(host, int(port)) as server:
+    server.login(user, pw)
+    server.sendmail(user, to, msg.as_string())
+    
     except Exception as exc:
         print(f"[Email Error] {exc}")
 
