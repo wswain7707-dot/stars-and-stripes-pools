@@ -201,7 +201,6 @@ def send_notification(name: str, email: str, message: str) -> None:
         msg["Reply-To"] = safe_email
 
         with smtplib.SMTP(host, port) as server:
-            server.starttls()
             server.login(user, pw)
             server.sendmail(user, to, msg.as_string())
 
