@@ -4,7 +4,7 @@ Stars and Stripes Pool Service — Flask Web Application
 Secure, single-file Flask website for a pool service business.
 
 Requirements:
-    pip install flask gunicorn
+    pip install flask gunicorn requests
 
 Run locally:
     python clearwater_pools.py
@@ -14,26 +14,17 @@ Deploy on Render:
     Start command:  gunicorn clearwater_pools:app --bind 0.0.0.0:$PORT
 
 IMPORTANT — Set these in Render's Environment Variables dashboard:
-    SECRET_KEY  →  generate with: python -c "import secrets; print(secrets.token_hex(32))"
-                   Without this, every app restart invalidates all sessions and breaks CSRF.
-    DEBUG       →  false
-
-Optional — Gmail email delivery:
-    SMTP_HOST  →  smtp.gmail.com
-    SMTP_PORT  →  587
-    SMTP_USER  →  your-gmail@gmail.com
-    SMTP_PASS  →  your-16-char-app-password
-                  (NOT your regular Gmail password — generate at:
-                   myaccount.google.com → Security → 2-Step Verification → App Passwords)
-    SMTP_TO    →  where you want inquiries sent (defaults to SMTP_USER if not set)
+    SECRET_KEY    →  generate with: python -c "import secrets; print(secrets.token_hex(32))"
+                     Without this, every app restart invalidates all sessions and breaks CSRF.
+    BREVO_API_KEY →  your Brevo API key (found in Brevo → Settings → API Keys)
+    DEBUG         →  false
 """
 
 import os
 import re
 import time
 import secrets
-import smtplib
-from email.mime.text import MIMEText
+import requests
 from collections import defaultdict
 from flask import Flask, render_template_string, request, redirect, flash, url_for, session
 
@@ -196,20 +187,22 @@ def validate_contact(name: str, email: str, message: str) -> list:
 # ║                  EMAIL DELIVERY                                  ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
+BREVO_SEND_URL   = "https://api.brevo.com/v3/smtp/email"
+BUSINESS_EMAIL   = "starsandstripespoolservice@gmail.com"
+BUSINESS_NAME    = "Stars & Stripes Pool Service"
+
+
 def send_notification(name: str, email: str, message: str) -> None:
     """
-    Sends contact form submissions via SMTP when env vars are configured.
-    Falls back to console logging (visible in Render's log dashboard) when not.
-
-    The timeout=10 on the SMTP connection is critical for Render: without it,
-    a stalled or rejected connection hangs indefinitely, gunicorn kills the
-    worker after 30 seconds, and the app appears to crash.
+    Sends contact form submissions via Brevo's transactional email API.
+    Falls back to console logging (visible in Render's log dashboard) when
+    BREVO_API_KEY is not set.
     """
     safe_name  = re.sub(r"[\r\n]", "", name)
     safe_email = re.sub(r"[\r\n]", "", email)
 
-    if not os.environ.get("SMTP_HOST"):
-        # No SMTP configured — log to stdout (visible in Render → Logs)
+    api_key = os.environ.get("BREVO_API_KEY")
+    if not api_key:
         print("\n--- [Stars & Stripes] New Contact Submission ---")
         print(f"  Name:    {safe_name}")
         print(f"  Email:   {safe_email}")
@@ -217,38 +210,28 @@ def send_notification(name: str, email: str, message: str) -> None:
         return
 
     try:
-        host = os.environ["SMTP_HOST"]
-        port = int(os.environ.get("SMTP_PORT", 587))
-        user = os.environ["SMTP_USER"]
-        pw   = os.environ["SMTP_PASS"]
-        to   = os.environ.get("SMTP_TO", user)
-
-        body = (
-            f"New inquiry via the Stars & Stripes website:\n\n"
-            f"Name:    {safe_name}\n"
-            f"Email:   {safe_email}\n\n"
-            f"Message:\n{message}"
+        payload = {
+            "sender":      {"name": BUSINESS_NAME, "email": BUSINESS_EMAIL},
+            "to":          [{"email": BUSINESS_EMAIL, "name": BUSINESS_NAME}],
+            "replyTo":     {"email": safe_email, "name": safe_name},
+            "subject":     f"Stars & Stripes — Inquiry from {safe_name}",
+            "textContent": (
+                f"New inquiry via the Stars & Stripes website:\n\n"
+                f"Name:    {safe_name}\n"
+                f"Email:   {safe_email}\n\n"
+                f"Message:\n{message}"
+            ),
+        }
+        resp = requests.post(
+            BREVO_SEND_URL,
+            json=payload,
+            headers={"api-key": api_key, "Content-Type": "application/json"},
+            timeout=10,
         )
-        msg = MIMEText(body, "plain")
-        msg["Subject"]  = f"Stars & Stripes — Inquiry from {safe_name}"
-        msg["From"]     = user
-        msg["To"]       = to
-        msg["Reply-To"] = safe_email
-
-        # FIX: Single connection, timeout=10 prevents gunicorn worker from being killed.
-        # Previously the code created two separate SMTP connections — the inner one
-        # shadowed the outer one and neither was handled correctly.
-        with smtplib.SMTP(host, port, timeout=10) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(user, pw)
-            server.sendmail(user, to, msg.as_string())
-
+        resp.raise_for_status()
         print(f"[Email OK] Notification sent for inquiry from {safe_name}")
 
     except Exception as exc:
-        # Log the error server-side — never expose SMTP details to the user
         print(f"[Email Error] {type(exc).__name__}: {exc}")
 
 
