@@ -4,10 +4,28 @@ Stars and Stripes Pool Service — Flask Web Application
 Secure, single-file Flask website for a pool service business.
 
 Requirements:
-    pip install flask
+    pip install flask gunicorn
 
 Run locally:
     python SASPS.py
+
+Deploy on Render:
+    Build command:  pip install -r requirements.txt
+    Start command:  gunicorn SASPS:app --bind 0.0.0.0:$PORT
+
+IMPORTANT — Set these in Render's Environment Variables dashboard:
+    SECRET_KEY  →  generate with: python -c "import secrets; print(secrets.token_hex(32))"
+                   Without this, every app restart invalidates all sessions and breaks CSRF.
+    DEBUG       →  false
+
+Optional — Gmail email delivery:
+    SMTP_HOST  →  smtp.gmail.com
+    SMTP_PORT  →  587
+    SMTP_USER  →  your-gmail@gmail.com
+    SMTP_PASS  →  your-16-char-app-password
+                  (NOT your regular Gmail password — generate at:
+                   myaccount.google.com → Security → 2-Step Verification → App Passwords)
+    SMTP_TO    →  where you want inquiries sent (defaults to SMTP_USER if not set)
 """
 
 import os
@@ -15,7 +33,6 @@ import re
 import time
 import secrets
 import smtplib
-import ssl
 from email.mime.text import MIMEText
 from collections import defaultdict
 from flask import Flask, render_template_string, request, redirect, flash, url_for, session
@@ -26,10 +43,14 @@ from flask import Flask, render_template_string, request, redirect, flash, url_f
 
 app = Flask(__name__)
 
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", secrets.token_hex(32))
-app.config["SESSION_COOKIE_HTTPONLY"] = True    
-app.config["SESSION_COOKIE_SAMESITE"]  = "Lax"  
-# app.config["SESSION_COOKIE_SECURE"]  = True   # ← Uncomment once deployed on HTTPS
+# CRITICAL: Set SECRET_KEY as an environment variable on Render.
+# Without it, a new random key is generated on every restart/deploy,
+# which invalidates all sessions and causes every form submission to fail
+# with a CSRF error until the user refreshes the page.
+app.config["SECRET_KEY"]              = os.environ.get("SECRET_KEY", secrets.token_hex(32))
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+# app.config["SESSION_COOKIE_SECURE"] = True  # Uncomment once live on HTTPS
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -42,20 +63,21 @@ SERVICES = [
         "name": "Monthly Service",
         "price": "$125",
         "desc": "Includes wall sweeping, chemical balance, sweeper cleaning, "
-                "plumbing assessment, and purface cleaning to ensure your pool is always in top condition.",
+                "plumbing assessment, and surface cleaning to ensure your pool "
+                "is always in top condition.",
     },
     {
         "icon": "💧",
-        "name": "Full-Service Cleaning",
+        "name": "Filter Cleaning",
         "price": "$95",
-        "desc": " Includes the removal, cleaning, and reinstallation of your pool filter."
+        "desc": "Includes the removal, cleaning, and reinstallation of your pool filter.",
     },
     {
         "icon": "🔧",
         "name": "Miscellaneous Repairs",
-        "price": " Upon Request ",
-        "desc": "Includes minor repairs, major repairs, or any fixes you need "
-                "no matter the complexity."
+        "price": "Upon Request",
+        "desc": "Includes minor repairs, major repairs, or any fixes you need — "
+                "no matter the complexity.",
     },
 ]
 
@@ -70,8 +92,8 @@ WHY_US = [
     {
         "icon": "🎖️",
         "title": "Veteran Owned",
-        "desc": "Fully licensed technicians with comprehensive liability "
-                "coverage for your complete peace of mind.",
+        "desc": "Proudly veteran-owned and operated, with the discipline and "
+                "dedication you'd expect from those who served.",
     },
     {
         "icon": "📍",
@@ -82,8 +104,8 @@ WHY_US = [
     {
         "icon": "🕐",
         "title": "Consistent Schedule",
-        "desc": " We work around your schedule. "
-                " Weekly visits. Thourough communication. No surprises. ",
+        "desc": "We work around your schedule. Weekly visits, thorough "
+                "communication, no surprises.",
     },
 ]
 
@@ -93,11 +115,12 @@ WHY_US = [
 # ╚══════════════════════════════════════════════════════════════════╝
 
 _rate_store: dict = defaultdict(list)
-RATE_MAX    = 5      
-RATE_WINDOW = 3600   
+RATE_MAX    = 5
+RATE_WINDOW = 3600
 
 
 def is_rate_limited(ip: str) -> bool:
+    """Returns True if this IP has exceeded 5 submissions per hour."""
     now    = time.time()
     cutoff = now - RATE_WINDOW
     _rate_store[ip] = [t for t in _rate_store[ip] if t > cutoff]
@@ -112,11 +135,13 @@ def is_rate_limited(ip: str) -> bool:
 # ╚══════════════════════════════════════════════════════════════════╝
 
 def get_csrf_token() -> str:
+    """Generates (or retrieves) a per-session CSRF token."""
     if "_csrf" not in session:
         session["_csrf"] = secrets.token_hex(32)
     return session["_csrf"]
 
 def validate_csrf(submitted: str) -> bool:
+    """Constant-time comparison prevents timing side-channel attacks."""
     stored = session.get("_csrf", "")
     return secrets.compare_digest(submitted or "", stored)
 
@@ -168,14 +193,23 @@ def validate_contact(name: str, email: str, message: str) -> list:
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║                  OPTIONAL EMAIL DELIVERY                         ║
+# ║                  EMAIL DELIVERY                                  ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 def send_notification(name: str, email: str, message: str) -> None:
+    """
+    Sends contact form submissions via SMTP when env vars are configured.
+    Falls back to console logging (visible in Render's log dashboard) when not.
+
+    The timeout=10 on the SMTP connection is critical for Render: without it,
+    a stalled or rejected connection hangs indefinitely, gunicorn kills the
+    worker after 30 seconds, and the app appears to crash.
+    """
     safe_name  = re.sub(r"[\r\n]", "", name)
     safe_email = re.sub(r"[\r\n]", "", email)
 
     if not os.environ.get("SMTP_HOST"):
+        # No SMTP configured — log to stdout (visible in Render → Logs)
         print("\n--- [Stars & Stripes] New Contact Submission ---")
         print(f"  Name:    {safe_name}")
         print(f"  Email:   {safe_email}")
@@ -190,7 +224,7 @@ def send_notification(name: str, email: str, message: str) -> None:
         to   = os.environ.get("SMTP_TO", user)
 
         body = (
-            f"New inquiry via the website:\n\n"
+            f"New inquiry via the Stars & Stripes website:\n\n"
             f"Name:    {safe_name}\n"
             f"Email:   {safe_email}\n\n"
             f"Message:\n{message}"
@@ -201,12 +235,21 @@ def send_notification(name: str, email: str, message: str) -> None:
         msg["To"]       = to
         msg["Reply-To"] = safe_email
 
-        with smtplib.SMTP_SSL(host, int(port)) as server:
-    server.login(user, pw)
-    server.sendmail(user, to, msg.as_string())
-    
+        # FIX: Single connection, timeout=10 prevents gunicorn worker from being killed.
+        # Previously the code created two separate SMTP connections — the inner one
+        # shadowed the outer one and neither was handled correctly.
+        with smtplib.SMTP(host, port, timeout=10) as server:
+            server.ehlo()
+            server.starttls()
+            server.ehlo()
+            server.login(user, pw)
+            server.sendmail(user, to, msg.as_string())
+
+        print(f"[Email OK] Notification sent for inquiry from {safe_name}")
+
     except Exception as exc:
-        print(f"[Email Error] {exc}")
+        # Log the error server-side — never expose SMTP details to the user
+        print(f"[Email Error] {type(exc).__name__}: {exc}")
 
 
 # ╔══════════════════════════════════════════════════════════════════╗
@@ -221,8 +264,8 @@ HTML = """
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="description"
         content="Professional pool cleaning and maintenance in Fresno, CA.
-                 Transparent pricing, licensed technicians, reliable weekly service.">
-  <title>Stars & Stripes Pool Service — Fresno, CA</title>
+                 Veteran-owned, transparent pricing, reliable weekly service.">
+  <title>Stars &amp; Stripes Pool Service — Fresno, CA</title>
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -261,34 +304,39 @@ HTML = """
 
 <body class="bg-slate-50 text-slate-800">
 
+  <!-- STICKY HEADER -->
   <header class="sticky top-0 z-50 bg-blue-950/96 backdrop-blur-sm shadow-lg">
     <div class="max-w-6xl mx-auto px-6 py-4 flex justify-between items-center">
-      <a href="#" class="text-white text-xl font-extrabold tracking-tight hover:text-slate-200 transition flex items-center gap-2">
-        <span></span> Stars & Stripes Pools
+      <a href="#" class="text-white text-xl font-extrabold tracking-tight hover:text-slate-200 transition">
+        ⭐ Stars &amp; Stripes Pools
       </a>
       <nav class="flex items-center gap-6 text-sm font-semibold">
         <a href="#services" class="text-slate-300 hover:text-white transition hidden sm:inline">Services</a>
         <a href="#why-us"   class="text-slate-300 hover:text-white transition hidden sm:inline">Why Us</a>
         <a href="#contact"
-           class="bg-red-500 hover:bg-red-600 active:bg-red-700 text-white px-5 py-2 rounded-lg transition shadow font-bold">
+           class="bg-red-600 hover:bg-red-500 active:bg-red-700 text-white px-5 py-2 rounded-lg transition shadow font-bold">
           Get a Quote
         </a>
       </nav>
     </div>
   </header>
 
+  <!-- HERO -->
   <section class="hero-wave bg-gradient-to-br from-blue-900 via-blue-950 to-slate-900 text-white pt-20">
     <div class="max-w-6xl mx-auto px-6 text-center">
       <p class="text-blue-300 uppercase tracking-[0.2em] text-xs font-bold mb-5">
         Fresno's Trusted Pool Pros
       </p>
       <h1 class="text-5xl md:text-7xl font-black leading-[1.05] mb-6 tracking-tight">
-        Stars and Stripes Pool Service.<br>
+        Stars &amp; Stripes Pool Service.<br>
         <span class="text-red-500">American Made Quality.</span>
       </h1>
-<img src="/static/logo.png" 
-           alt="Stars and Stripes Pool Service Logo" 
-           class="ml-3 mt-6 h-32 w-auto object-contain drop-shadow-md scale-250 translate-y-10">
+
+      <!-- Logo: place logo.png inside a /static folder next to SASPS.py -->
+      <img src="/static/logo.png"
+           alt="Stars and Stripes Pool Service Logo"
+           class="mx-auto mt-6 h-32 w-auto object-contain drop-shadow-lg"
+           onerror="this.style.display='none'">
 
       <p class="text-slate-300 text-lg md:text-xl mb-10 max-w-xl mx-auto leading-relaxed mt-6">
         Professional pool maintenance, chemical balancing, and deep cleaning —
@@ -307,6 +355,7 @@ HTML = """
     </div>
   </section>
 
+  <!-- FLASH MESSAGES -->
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
       <div class="max-w-6xl mx-auto px-6 mt-8 space-y-3">
@@ -322,11 +371,11 @@ HTML = """
     {% endif %}
   {% endwith %}
 
-
+  <!-- SERVICES -->
   <section id="services" class="max-w-6xl mx-auto px-6 py-20">
     <div class="text-center mb-14">
       <p class="text-blue-900 uppercase tracking-[0.18em] text-xs font-bold mb-3">What We Offer</p>
-      <h2 class="text-4xl md:text-5xl font-black text-slate-900 tracking-tight">Services & Pricing</h2>
+      <h2 class="text-4xl md:text-5xl font-black text-slate-900 tracking-tight">Services &amp; Pricing</h2>
       <p class="text-slate-500 mt-4 max-w-lg mx-auto">
         Transparent pricing, no hidden fees. Pick the plan that fits your pool.
       </p>
@@ -336,20 +385,21 @@ HTML = """
       <div class="service-card reveal bg-white rounded-2xl border border-slate-200 shadow-sm p-8">
         <div class="text-5xl mb-5">{{ service.icon }}</div>
         <h3 class="text-xl font-bold text-slate-900 mb-1">{{ service.name }}</h3>
-        <p class="text-3xl font-black text-red-500 mb-4">{{ service.price }}</p>
+        <p class="text-3xl font-black text-red-600 mb-4">{{ service.price }}</p>
         <p class="text-slate-500 leading-relaxed text-sm">{{ service.desc }}</p>
       </div>
       {% endfor %}
     </div>
   </section>
 
+  <!-- WHY US -->
   <section id="why-us" class="bg-slate-100 border-y border-slate-200 py-20">
     <div class="max-w-6xl mx-auto px-6">
       <div class="text-center mb-14">
-        <p class="text-blue-900 uppercase tracking-[0.18em] text-xs font-bold mb-3">The Stars & Stripes Difference</p>
+        <p class="text-blue-900 uppercase tracking-[0.18em] text-xs font-bold mb-3">The Stars &amp; Stripes Difference</p>
         <h2 class="text-4xl md:text-5xl font-black text-slate-900 tracking-tight">Why Choose Us?</h2>
       </div>
-      <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+      <div class="grid sm:grid-cols-3 gap-6">
         {% for item in why_us %}
         <div class="reveal bg-white rounded-2xl p-7 shadow-sm border border-slate-200 text-center hover:shadow-md transition">
           <div class="text-4xl mb-3">{{ item.icon }}</div>
@@ -361,9 +411,11 @@ HTML = """
     </div>
   </section>
 
+  <!-- CONTACT -->
   <section id="contact" class="bg-blue-950 text-white py-20">
     <div class="max-w-6xl mx-auto px-6 grid md:grid-cols-2 gap-16">
 
+      <!-- Info column -->
       <div class="reveal">
         <p class="text-red-400 uppercase tracking-[0.18em] text-xs font-bold mb-3">Let's Talk</p>
         <h2 class="text-4xl md:text-5xl font-black tracking-tight mb-5">Get In Touch</h2>
@@ -373,30 +425,32 @@ HTML = """
         </p>
 
         <div class="space-y-4">
-          <a href="tel:+15591234567" class="flex items-center gap-4 group">
-            <div class="w-12 h-12 rounded-xl bg-red-500 group-hover:bg-red-600 transition flex items-center justify-center text-xl shrink-0">📞</div>
+          <!-- FIX: tel link now matches the actual phone number (559) 281-8167 -->
+          <a href="tel:+15592818167" class="flex items-center gap-4 group">
+            <div class="w-12 h-12 rounded-xl bg-red-600 group-hover:bg-red-500 transition flex items-center justify-center text-xl shrink-0">📞</div>
             <div>
               <p class="text-xs text-slate-400 uppercase tracking-wide font-semibold">Phone</p>
               <p class="font-semibold group-hover:text-red-400 transition">{{ contact.phone }}</p>
             </div>
           </a>
           <a href="mailto:{{ contact.email }}" class="flex items-center gap-4 group">
-            <div class="w-12 h-12 rounded-xl bg-red-500 group-hover:bg-red-600 transition flex items-center justify-center text-xl shrink-0">✉️</div>
+            <div class="w-12 h-12 rounded-xl bg-red-600 group-hover:bg-red-500 transition flex items-center justify-center text-xl shrink-0">✉️</div>
             <div>
               <p class="text-xs text-slate-400 uppercase tracking-wide font-semibold">Email</p>
               <p class="font-semibold group-hover:text-red-400 transition">{{ contact.email }}</p>
             </div>
           </a>
-          <a href="https://instagram.com/StarsAndStripesPools" target="_blank" rel="noopener noreferrer"
+          <!-- FIX: Instagram URL now matches the handle @StarsAndStripesPoolService -->
+          <a href="https://instagram.com/StarsAndStripesPoolService" target="_blank" rel="noopener noreferrer"
              class="flex items-center gap-4 group">
-            <div class="w-12 h-12 rounded-xl bg-red-500 group-hover:bg-red-600 transition flex items-center justify-center text-xl shrink-0">📸</div>
+            <div class="w-12 h-12 rounded-xl bg-red-600 group-hover:bg-red-500 transition flex items-center justify-center text-xl shrink-0">📸</div>
             <div>
               <p class="text-xs text-slate-400 uppercase tracking-wide font-semibold">Instagram</p>
               <p class="font-semibold group-hover:text-red-400 transition">{{ contact.instagram }}</p>
             </div>
           </a>
           <div class="flex items-center gap-4">
-            <div class="w-12 h-12 rounded-xl bg-red-500 flex items-center justify-center text-xl shrink-0">📍</div>
+            <div class="w-12 h-12 rounded-xl bg-red-600 flex items-center justify-center text-xl shrink-0">📍</div>
             <div>
               <p class="text-xs text-slate-400 uppercase tracking-wide font-semibold">Location</p>
               <p class="font-semibold">{{ contact.location }}</p>
@@ -405,6 +459,7 @@ HTML = """
         </div>
       </div>
 
+      <!-- Form column -->
       <div class="reveal bg-blue-900 p-8 rounded-2xl border border-blue-800 shadow-2xl">
         <h3 class="text-2xl font-black mb-6">Send a Message</h3>
         <form action="/submit-contact" method="POST" class="space-y-5">
@@ -413,7 +468,7 @@ HTML = """
           <div>
             <label class="block text-sm font-semibold text-slate-300 mb-1.5">Your Name</label>
             <input type="text" name="name" required maxlength="100" autocomplete="name"
-                   placeholder="Jane Smith"
+                   placeholder="John Smith"
                    class="w-full bg-blue-950 border border-blue-800 rounded-lg px-4 py-2.5 text-white
                           placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500
                           focus:border-transparent transition text-sm">
@@ -422,7 +477,7 @@ HTML = """
           <div>
             <label class="block text-sm font-semibold text-slate-300 mb-1.5">Email Address</label>
             <input type="email" name="email" required maxlength="254" autocomplete="email"
-                   placeholder="jane@example.com"
+                   placeholder="john@example.com"
                    class="w-full bg-blue-950 border border-blue-800 rounded-lg px-4 py-2.5 text-white
                           placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500
                           focus:border-transparent transition text-sm">
@@ -441,7 +496,7 @@ HTML = """
           </div>
 
           <button type="submit"
-                  class="w-full bg-red-500 hover:bg-red-600 active:bg-red-700 transition text-white
+                  class="w-full bg-red-600 hover:bg-red-500 active:bg-red-700 transition text-white
                          font-black py-3 rounded-xl shadow-lg text-base">
             Send Message →
           </button>
@@ -455,10 +510,11 @@ HTML = """
     </div>
   </section>
 
+  <!-- FOOTER -->
   <footer class="bg-blue-950 text-slate-400 border-t border-blue-900 py-8">
     <div class="max-w-6xl mx-auto px-6 flex flex-col sm:flex-row justify-between items-center gap-4 text-sm">
-      <p class="font-bold text-white"> Stars & Stripes Pool Service</p>
-      <p>© 2026 Stars & Stripes. All rights reserved.</p>
+      <p class="font-bold text-white">⭐ Stars &amp; Stripes Pool Service</p>
+      <p>© 2026 Stars &amp; Stripes. All rights reserved.</p>
       <nav class="flex gap-5">
         <a href="#services" class="hover:text-slate-300 transition">Services</a>
         <a href="#why-us"   class="hover:text-slate-300 transition">Why Us</a>
@@ -490,10 +546,12 @@ def home():
 
 @app.route("/submit-contact", methods=["POST"])
 def submit_contact():
+    # Step 1: CSRF validation
     if not validate_csrf(request.form.get("csrf_token", "")):
         flash("Invalid request token. Please refresh the page and try again.", "error")
         return redirect(url_for("home"))
 
+    # Step 2: Rate limiting
     client_ip = (
         request.headers.get("X-Forwarded-For", request.remote_addr or "unknown")
         .split(",")[0]
@@ -503,6 +561,7 @@ def submit_contact():
         flash("Too many submissions. Please wait before trying again.", "error")
         return redirect(url_for("home"))
 
+    # Step 3: Sanitize & validate
     name    = request.form.get("name",    "").strip()
     email   = request.form.get("email",   "").strip().lower()
     message = request.form.get("message", "").strip()
@@ -512,6 +571,7 @@ def submit_contact():
         flash(errors[0], "error")
         return redirect(url_for("home"))
 
+    # Step 4: Deliver notification
     send_notification(name, email, message)
 
     flash("Thanks! Your message was sent — we'll be in touch shortly. 🎉", "success")
