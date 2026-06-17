@@ -306,34 +306,42 @@ HTML = """
 
   <!-- HERO -->
   <section class="hero-wave bg-gradient-to-br from-blue-900 via-blue-950 to-slate-900 text-white pt-20">
-    <div class="max-w-6xl mx-auto px-6 text-center">
-      <p class="text-blue-300 uppercase tracking-[0.2em] text-xs font-bold mb-5">
-        Fresno's Trusted Pool Pros
-      </p>
-      <h1 class="text-5xl md:text-7xl font-black leading-[1.05] mb-6 tracking-tight">
-        Stars &amp; Stripes Pool Service.<br>
-        <span class="text-red-500">American Made Quality.</span>
-      </h1>
+    <div class="max-w-6xl mx-auto px-6">
+      <div class="flex flex-col md:flex-row md:items-end md:gap-12">
 
-      <!-- Logo: place logo.png inside a /static folder next to SASPS.py -->
-      <img src="/static/logo.png"
-           alt="Stars and Stripes Pool Service Logo"
-           class="ml-2 mt-6 h-32 w-auto object-contain drop-shadow-lg translate-y-10 scale-225"
-           onerror="this.style.display='none'">
+        <!-- Text + buttons (left column on desktop, full width on mobile) -->
+        <div class="text-center md:text-left flex-1">
+          <p class="text-blue-300 uppercase tracking-[0.2em] text-xs font-bold mb-5">
+            Fresno's Trusted Pool Pros
+          </p>
+          <h1 class="text-5xl md:text-7xl font-black leading-[1.05] mb-6 tracking-tight">
+            Stars &amp; Stripes Pool Service.<br>
+            <span class="text-red-500">American Made Quality.</span>
+          </h1>
+          <p class="text-slate-300 text-lg md:text-xl mb-10 max-w-xl mx-auto md:mx-0 leading-relaxed">
+            Professional pool maintenance, chemical balancing, and deep cleaning —
+            so you can just enjoy the swim.
+          </p>
+          <div class="flex flex-col sm:flex-row gap-4 justify-center md:justify-start pb-4">
+            <a href="#contact"
+               class="bg-white text-blue-950 font-black px-8 py-3.5 rounded-xl shadow-xl hover:bg-slate-100 transition text-base">
+              Book a Free Quote →
+            </a>
+            <a href="#services"
+               class="border border-white/40 text-white font-semibold px-8 py-3.5 rounded-xl hover:bg-white/10 transition text-base">
+              View Services
+            </a>
+          </div>
+        </div>
 
-      <p class="text-slate-300 text-lg md:text-xl mb-10 max-w-xl mx-auto leading-relaxed mt-6">
-        Professional pool maintenance, chemical balancing, and deep cleaning —
-        so you can just enjoy the swim.
-      </p>
-      <div class="flex flex-col sm:flex-row gap-4 justify-center pb-4">
-        <a href="#contact"
-           class="bg-white text-blue-950 font-black px-8 py-3.5 rounded-xl shadow-xl hover:bg-slate-100 transition text-base">
-          Book a Free Quote →
-        </a>
-        <a href="#services"
-           class="border border-white/40 text-white font-semibold px-8 py-3.5 rounded-xl hover:bg-white/10 transition text-base">
-          View Services
-        </a>
+        <!-- Logo (centered below on mobile, bottom-right of hero on desktop) -->
+        <div class="flex justify-center md:justify-end md:self-end pb-4">
+          <img src="/static/logo.png"
+               alt="Stars and Stripes Pool Service Logo"
+               class="h-40 w-auto max-w-[220px] md:h-56 md:max-w-xs object-contain drop-shadow-lg"
+               onerror="this.style.display='none'">
+        </div>
+
       </div>
     </div>
   </section>
