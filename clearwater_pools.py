@@ -7,11 +7,11 @@ Requirements:
     pip install flask gunicorn
 
 Run locally:
-    python SASPS.py
+    python clearwater_pools.py
 
 Deploy on Render:
     Build command:  pip install -r requirements.txt
-    Start command:  gunicorn SASPS:app --bind 0.0.0.0:$PORT
+    Start command:  gunicorn clearwater_pools:app --bind 0.0.0.0:$PORT
 
 IMPORTANT — Set these in Render's Environment Variables dashboard:
     SECRET_KEY  →  generate with: python -c "import secrets; print(secrets.token_hex(32))"
@@ -335,7 +335,7 @@ HTML = """
       <!-- Logo: place logo.png inside a /static folder next to SASPS.py -->
       <img src="/static/logo.png"
            alt="Stars and Stripes Pool Service Logo"
-           class="mx-auto mt-6 h-32 w-auto object-contain drop-shadow-lg"
+           class="ml-2 mt-6 h-32 w-auto object-contain drop-shadow-lg translate-y-10 scale-225"
            onerror="this.style.display='none'">
 
       <p class="text-slate-300 text-lg md:text-xl mb-10 max-w-xl mx-auto leading-relaxed mt-6">
